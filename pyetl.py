@@ -175,7 +175,7 @@ def main():
             rowcnt += 1
             jmsg, errcode = returnJSONRecord(message)
             if errcode == 0:
-                sizecnt += len(jmsg.dumps())
+                sizecnt += len(json.dumps(jmsg))
                 dataar.append(jmsg)
         elif message.error().code() != KafkaError._PARTITION_EOF:
             print("MyError: " + message.error())
@@ -189,7 +189,7 @@ def main():
                 part_ledger = writeFile(dataar, part_ledger, curfile, rowcnt, sizecnt, timedelta)
                 part_ledger = moveFile(part_ledger)
             else:
-                writeMaprRDB(dataar, table, cf_lookup, rowcnt, sizecnt, timedelta)
+                writeMapRDB(dataar, table, cf_lookup, rowcnt, sizecnt, timedelta)
             rowcnt = 0
             sizecnt = 0
             lastwrite = curtime
@@ -365,9 +365,9 @@ def returnJSONRecord(m):
         print(m.value())
         failedjson = 3
            # Only write if we have a message
-    if val != "" and failedjson == 0:
+    if retval != "" and failedjson == 0:
         try:
-            retval = json.loads(val)
+            retval = json.loads(retval)
         except:
             failedjson = 1
             if loadedenv['remove_fields_on_fail'] == 1:
@@ -460,9 +460,11 @@ def db_row(jrow, cfl):
             try:
                 v = str(jrow[r])
             except:
-                print "Field: %s" % r
-                print jrow[r].decode('ascii', errors='ignore')
-                print jrow
+                try:
+                    v = jrow[r].encode('ascii', errors='ignore').decode()
+                except:
+                    print "Field: %s" % r
+                    print jrow
         out[cfl[r] + ":" + r] = v
     return out
 

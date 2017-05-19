@@ -1,6 +1,6 @@
 #!/bin/bash
 
-IMG="test/pyetl:all"
+IMG="dockerregv2-shared.marathon.slave.mesos:5005/pyetl:1.0.0"
 
 CODE="-v=`pwd`:/app/code:rw"
 
