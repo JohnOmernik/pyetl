@@ -22,6 +22,56 @@
 # Do consider Kafka Connect for your ETL needs.
 #
 
+ARGS_PASSED="0"
+PARQ_OUT="0" # Include Fast Parquet outputs
+MAPRDB_OUT="0" # Include library for MaprDB Output
+STREAMS_IN="0" # Use MapR Librdkafka to attach to streams (if 0 then use Apache Kafka librdkafka)
+UNATTEND="0"
+for i in "$@"
+do
+case $i in
+    -a)
+    PARQ_OUT="1"
+    MARPDB_OUT="1"
+    STREAMS_IN="1"
+    ARGS_PASSED="1"
+    ;;
+    -p)
+    PARQ_OUT="1"
+    ARGS_PASSED="1"
+    ;;
+    -m)
+    MAPRDB_OUT="1"
+    ARGS_PASSED="1"
+    ;;
+    -s)
+    STREAMS_IN="1"
+    ARGS_PASSED="1"
+    ;;
+    *)
+    # Unknown
+    ;;
+esac
+done
+
+
+if [ "$ARGS_PASSED" == "0" ]; then
+    echo "This scripts makes a docker file to build the pyetl container based on your argments"
+    echo "You must pass arguments to this script to properly build"
+    echo "This script only creates the dockerfile, as ./Dockerfile, it doesn't build"
+    echo ""
+    echo "Arguments:"
+    echo "-a build with maprdb output, streams input, and parquet output (same as -p -m -s)"
+    echo "-s build with mapr streams as input instead of Apache Kafka"
+    echo "-m build with mapr db as output"
+    echo "-p build with fast parquet for outputing to parquet files"
+    echo ""
+    exit 1
+fi
+
+
+
+
 PARQ_OUT="1" # Include Fast Parquet outputs
 MAPRDB_OUT="1" # Include library for MaprDB Output
 STREAMS_IN="1" # Use MapR Librdkafka to attach to streams (if 0 then use Apache Kafka librdkafka)

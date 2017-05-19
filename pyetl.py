@@ -3,11 +3,27 @@ from confluent_kafka import Consumer, KafkaError
 import json
 import re
 import time
+import datetime
 import shutil
 import gzip
 import os
 import sys
 import random
+
+
+if sys.version_info > (3,):
+    try:
+        import pandas as pd
+        from fastparquet import write as parqwrite
+        from fastparquet import ParquetFile
+    except:
+        print("Attempting to import pands or fastparquet failed - Parquet writer WILL fail - are you sure your container has this support??")
+else:
+    try:
+        from pychbase import Connection, Table, Batch
+    except:
+        print("Attempting to import pychbase failed - MaprDB writer WILL fail - ar you sure your contianer has this support??")
+
 
 # Variables - Should be setable by arguments at some point
 
@@ -40,12 +56,12 @@ envvars['parq_merge_file'] = [0, False, 'int']
 envvars['json_gz_compress'] = [0, False, 'bool'] # Not supported yet
 
 # MapR-DB Options
-envvars['maprdb_table_base'] = ['', False, 'str']
+envvars['maprdb_table_base'] = ['', True, 'str']
 envvars['maprdb_row_key_fields'] = ['', True, 'str']
 envvars['maprdb_row_key_delim'] = ['_', False, 'str']
 envvars['maprdb_family_mapping'] = ['', True, 'str']
 envvars['maprdb_create_table'] = [0, False, 'int']
-envvars['maprdb_bulk_enabled'] = [0, False, 'int']
+envvars['maprdb_batch_enabled'] = [0, False, 'int']
 envvars['maprdb_print_drill_view'] = [0, False, 'int']
 
 #File Options
@@ -54,7 +70,7 @@ envvars['file_uniq_env'] = ['HOSTNAME', False, 'str']
 envvars['file_partition_field'] = ['day', False, 'str']
 envvars['file_partmaxage'] = ['600', False, 'int']
 envvars['file_unknownpart'] = ['unknown', False, 'str']
-envvars['file_table_base'] = ['', False, 'str']
+envvars['file_table_base'] = ['', True, 'str']
 envvars['file_tmp_part_dir'] = ['.tmp', False, 'str']
 envvars['file_write_live'] = [0, False, 'int']
 
@@ -76,51 +92,49 @@ def main():
 
     global loadedenv
     loadedenv = loadenv(envvars)
-    loadedenv['tmp_part'] = loadedenv['file_table_base'] + "/" + loadedenv['file_tmp_part_dir']
-    loadedenv['uniq_val'] = os.environ[loadedenv['file_uniq_env']]
+    if loadedenv['dest_type'] != 'maprdb':
+        loadedenv['tmp_part'] = loadedenv['file_table_base'] + "/" + loadedenv['file_tmp_part_dir']
+        loadedenv['uniq_val'] = os.environ[loadedenv['file_uniq_env']]
+
     if loadedenv['debug'] == 1:
         print(json.dumps(loadedenv, sort_keys=True, indent=4, separators=(',', ': ')))
 
     if loadedenv['dest_type'] == 'parq':
         if not sys.version_info > (3,):
-            print("Python 2 is not supported for Parquet Write, please use Python 3")
+            print("Python 2 is not supported for Parquet Writer, please use Python 3")
             sys.exit(1)
-        import pandas as pd
-        from fastparquet import write as parqwrite
-        from fastparquet import ParquetFile
     elif loadedenv['dest_type'] == 'maprdb':
         if sys.version_info > (3,):
             print("Python 3 is not supported for maprdb load please use Python 2")
             sys.exit(1)
 
-        from pychbase import Connection, Table, Batch
         table_schema, cf_schema, cf_lookup = loadmaprdbschemas()
         myview = drill_view(table_schema)
         if loadedenv['debug'] >= 1 or loadedenv['maprdb_print_drill_view'] == 1: 
-            print "Drill Shell View:"
-            print myview
+            print("Drill Shell View:")
+            print( myview)
         if loadedenv['maprdb_print_drill_view'] == 1:
             sys.exit(0)
         if loadedenv['debug'] >= 1:
-            print "Schema provided:"
-            print table_schema
-            print ""
-            print "cf_lookip:"
-            print cf_lookup
+            print("Schema provided:")
+            print(table_schema)
+            print("")
+            print("cf_lookip:")
+            print(cf_lookup)
         connection = Connection()
         try:
             table = connection.table(loadedenv['maprdb_table_base'])
         except:
             if loadedenv['maprdb_create_table'] != 1:
-                print "Table not found and create table not set to 1 - Cannot proceed"
+                print("Table not found and create table not set to 1 - Cannot proceed")
                 sys.exit(1)
             else:
-                print "Table not found: Creating"
+                print("Table not found: Creating")
                 connection.create_table(loadedenv['maprdb_table_base'], cf_schema)
                 try:
                     table = connection.table(loadedenv['maprdb_table_base'])
                 except:
-                    print "Couldn't find table, tried to create, still can't find, exiting"
+                    print("Couldn't find table, tried to create, still can't find, exiting")
                     sys.exit(1)
 
 
@@ -186,8 +200,8 @@ def main():
            # If our row count is over the max, our size is over the max, or time delta is over the max, write the group .
         if (rowcnt >= loadedenv['rowmax'] or timedelta >= loadedenv['timemax'] or sizecnt >= loadedenv['sizemax']) and len(dataar) > 0:
             if loadedenv['dest_type'] != 'maprdb':
-                part_ledger = writeFile(dataar, part_ledger, curfile, rowcnt, sizecnt, timedelta)
-                part_ledger = moveFile(part_ledger)
+                part_ledger = writeFile(dataar, part_ledger, curfile, curtime, rowcnt, sizecnt, timedelta)
+                part_ledger = dumpPart(part_ledger, curtime)
             else:
                 writeMapRDB(dataar, table, cf_lookup, rowcnt, sizecnt, timedelta)
             rowcnt = 0
@@ -198,16 +212,16 @@ def main():
     c.close()
 
 def writeMapRDB(dataar, table, cf_lookup, rowcnt, sizecnt, timedelta):
-    if loadedenv['maprdb_bulk_enabled'] == 1:
+    if loadedenv['maprdb_batch_enabled'] == 1:
         batch = table.batch()
         for r in dataar:
             batch.put(db_rowkey(r), db_row(r, cf_lookup))
         batch_errors = batch.send()
         if batch_errors == 0:
             if loadedenv['debug'] >= 1:
-                print "Write batch to %s at %s records - Size: %s - Seconds since last write: %s - NO ERRORS" % (loadedenv['maprdb_table_base'], rowcnt, sizecnt, timedelta)
+                print("%s Write batch to %s at %s records - Size: %s - Seconds since last write: %s - NO ERRORS" % (datetime.datetime.now(), loadedenv['maprdb_table_base'], rowcnt, sizecnt, timedelta))
         else:
-            print "Multiple errors on write - Errors: %s" % batch_errors
+            print("Multiple errors on write - Errors: %s" % batch_errors)
             sys.exit(1)
     else:
         bcnt = 0
@@ -224,19 +238,20 @@ def writeMapRDB(dataar, table, cf_lookup, rowcnt, sizecnt, timedelta):
 
 
 
-def dumpPart(pledger):
+def dumpPart(pledger, curtime):
     removekeys = []
     for x in pledger.keys():
         l = pledger[x][0]
         s = pledger[x][1]
         f = pledger[x][2]
+        fw = pledger[x][3]
         base_dir = loadedenv['file_table_base'] + '/' + x
         if not os.path.isdir(base_dir):
             try:
                 os.makedirs(base_dir)
             except:
                 print("Partition Create failed, it may have been already created for %s" % (base_dir))
-        if s > loadedenv['file_maxsize'] or (curtime - l) > loadedenv['file_partmaxage']:
+        if s > loadedenv['file_maxsize'] or (curtime - fw) > loadedenv['file_partmaxage']:
             new_file_name = loadedenv['uniq_val'] + "_" + str(curtime) + "." + loadedenv['dest_type']
             new_file = base_dir + "/" + new_file_name
 
@@ -246,7 +261,7 @@ def dumpPart(pledger):
                     outreason = "Max Size"
                 else:
                     outreason = "Max Age"
-                print("%s reached - Size: %s - Age: %s - Writing to %s" % (outreason, s, curtime - l, new_file))
+                print("%s %s reached - Size: %s - Age: %s - Writing to %s" % (datetime.datetime.now(), outreason, s, curtime - l, new_file))
 
             if loadedenv['dest_type'] == 'json':
                 if loadedenv['json_gz_compress'] == 1:
@@ -265,20 +280,20 @@ def dumpPart(pledger):
             if loadedenv['dest_type'] == 'parq':
                 if loadedenv['parq_merge_file'] == 1:
                     if loadedenv['debug'] >= 1:
-                       print("Merging parqfile into to new parq file")
+                       print("%s Merging parqfile into to new parq file" % (datetime.datetime.now()))
                     inparq = ParquetFile(new_file)
                     inparqdf = inparq.to_pandas()
                     tmp_file = loadedenv['tmp_part'] + "/" + new_file_name
-                    parqwrite(tmp_file, inparqdf, compression=loadedenv['parq_compress'], row_group_offsets=loadedenv['parq_offsets'], has_nulls=loadedenv['has_nulls'])
+                    parqwrite(tmp_file, inparqdf, compression=loadedenv['parq_compress'], row_group_offsets=loadedenv['parq_offsets'], has_nulls=loadedenv['parq_has_nulls'])
                     shutil.move(tmp_file, new_file)
                     inparq = None
                     inparqdf = None
     for y in removekeys:
-        del ledger[y]
+        del pledger[y]
     return pledger
 
 
-def writeFile(dataar, pledger, curfile, rowcnt, sizecnt, timedelta):
+def writeFile(dataar, pledger, curfile, curtime, rowcnt, sizecnt, timedelta):
     parts = []
     if loadedenv['dest_type'] == 'parq':
         parqdf = pd.DataFrame.from_records([l for l in dataar])
@@ -299,7 +314,8 @@ def writeFile(dataar, pledger, curfile, rowcnt, sizecnt, timedelta):
 
 
     if loadedenv['debug'] >= 1:
-        print("Write Data batchto %s at %s records - Size: %s - Seconds since last write: %s - Partitions in this batch: %s" % (curfile, rowcnt, sizecnt, timedelta, parts))
+
+        print("%s Write Data batch to %s at %s records - Size: %s - Seconds since last write: %s - Partitions in this batch: %s" % (datetime.datetime.now(), curfile, rowcnt, sizecnt, timedelta, parts))
 
     for part in parts:
         if loadedenv['dest_type'] == 'parq':
@@ -333,9 +349,9 @@ def writeFile(dataar, pledger, curfile, rowcnt, sizecnt, timedelta):
 
         if loadedenv['dest_type'] == 'parq':
             if not os.path.exists(final_file):
-                parqwrite(final_file, partdf, compression=loadedenv['parq_compress'], row_group_offsets=loadedenv['parq_offsets'], has_nulls=loadedenv['has_nulls'])
+                parqwrite(final_file, partdf, compression=loadedenv['parq_compress'], row_group_offsets=loadedenv['parq_offsets'], has_nulls=loadedenv['parq_has_nulls'])
             else:
-                parqwrite(final_file, partdf, compression=loadedenv['parq_compress'], row_group_offsets=loadedenv['parq_offsets'], has_nulls=loadedenv['has_nulls'], append=True)
+                parqwrite(final_file, partdf, compression=loadedenv['parq_compress'], row_group_offsets=loadedenv['parq_offsets'], has_nulls=loadedenv['parq_has_nulls'], append=True)
             partdf = pd.DataFrame()
         else:
             fout = open(final_file, 'a')
@@ -345,7 +361,12 @@ def writeFile(dataar, pledger, curfile, rowcnt, sizecnt, timedelta):
             partar = []
 
         cursize =  os.path.getsize(final_file)
-        ledger = [curtime, cursize, final_file]
+        if part in pledger:
+            firstwrite = pledger[part][3]
+        else:
+            firstwrite = curtime
+
+        ledger = [curtime, cursize, final_file, firstwrite]
         pledger[part] = ledger
     return pledger
 
@@ -371,7 +392,7 @@ def returnJSONRecord(m):
         except:
             failedjson = 1
             if loadedenv['remove_fields_on_fail'] == 1:
-                print("JSON Error likely due to binary in request - per config remove_field_on_fail - we are removing the the following fields and trying again")
+                print("%s JSON Error likely due to binary in request - per config remove_field_on_fail - we are removing the the following fields and trying again" % (datetime.datetime.now()))
                 while failedjson == 1:
                     repval = m.value()
                     for f in loadedenv['remove_fields'].split(","):
@@ -440,7 +461,7 @@ def db_rowkey(jrow):
                 try:
                     v = str(jrow[x])
                 except:
-                    print jrow
+                    print(jrow)
                     sys.exit(1)
 
         if out == "":
@@ -463,8 +484,8 @@ def db_row(jrow, cfl):
                 try:
                     v = jrow[r].encode('ascii', errors='ignore').decode()
                 except:
-                    print "Field: %s" % r
-                    print jrow
+                    print("Field: %s" % r)
+                    print(jrow)
         out[cfl[r] + ":" + r] = v
     return out
 
@@ -488,13 +509,16 @@ def loadmaprdbschemas():
 def loadenv(evars):
     print("Loading Environment Variables")
     lenv = {}
+    val = None
     for e in evars:
         try:
             val = os.environ[e.upper()]
         except:
             if evars[e][1] == True:
-                print("ENV Variable %s is required and not provided - Exiting" % (e.upper()))
-                sys.exit(1)
+                if e == 'dest_type':
+                    print("Variables DEST_TYPE not found, this variable MUST be provided - exiting")
+                    sys.exit(1)
+                    val = None
             else:
                 print("ENV Variable %s not found, but not required, using default of '%s'" % (e.upper(), evars[e][0]))
                 val = evars[e][0]
@@ -503,9 +527,19 @@ def loadenv(evars):
         if evars[e][2] == 'flt':
             val = float(val)
         if evars[e][2] == 'bool':
-            val=bool(val)
-        lenv[e] = val
-
+            val = bool(val)
+        if val != None:
+            lenv[e] = val
+    d = lenv['dest_type']
+    if d != "maprdb":
+        other = "file"
+    else:
+        other = "notfile"
+    for e in evars:
+        if evars[e][1] == True:
+            if not e in lenv and e.find(d) != 0 and e.find(other) != 0:
+                print("ENV Variable %s is required and not provided - Exiting" % (e.upper()))
+                sys.exit(1)
 
     return lenv
 
