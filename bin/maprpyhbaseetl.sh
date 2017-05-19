@@ -38,8 +38,8 @@ export LOOP_TIMEOUT="5.0"
 # The next three items has to do with the cacheing of records. As this come off the kafka queue, we store them in a list to keep from making smallish writes and dataframes
 # These are very small/conservative, you should be able to increase, but we need to do testing at volume
 
-export ROWMAX=1000 # Total max records cached. Regardless of size, once the number of records hits this number, the next record will cause a flush and write to parquet
-export SIZEMAX=2560000000  # Total size of records. This is a rough running size of records in bytes. Once the total hits this size, the next record will cause a flush and write to parquet
+export ROWMAX=2000 # Total max records cached. Regardless of size, once the number of records hits this number, the next record will cause a flush and write to parquet
+export SIZEMAX=128000000  # Total size of records. This is a rough running size of records in bytes. Once the total hits this size, the next record will cause a flush and write to parquet
 export TIMEMAX=10  # seconds since last write to force a write # The number of seconds since the last flush. Once this has been met, the next record from KAfka will cause a flush and write. 
 
 # MapR DB items
