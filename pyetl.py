@@ -41,6 +41,16 @@ envvars['group_id'] = ['', True, 'str']
 envvars['topic'] = ['', True, 'str']
 envvars['loop_timeout'] = ["5.0", False, 'flt']
 
+# Field Creation - used as a basic way to create a field based on another field.
+# If src is set and dest is not, the field is not created - Error occurs
+# Example: src = ts, dst = ts_part, start = 0, end = 10. This would change a value like 2017-08-08T21:26:10.843768Z to 2017-08-08
+
+envvars['derived_src'] = ['', False, 'str']  # The field to src
+envvars['derived_dst'] = ['', False, 'str']  # The field to put in the dest
+envvars['derived_start'] = [0, False, 'int'] # The position to start
+envvars['derived_end'] = [0, False, 'int']   # The position to end
+envvars['derived_req'] = [0, False, 'int']   # Fail if the addition/conversation fails
+
 #Loop Control
 envvars['rowmax'] = [50, False, 'int']
 envvars['timemax'] = [60, False, 'int']
@@ -98,6 +108,13 @@ def main():
 
     if loadedenv['debug'] == 1:
         print(json.dumps(loadedenv, sort_keys=True, indent=4, separators=(',', ': ')))
+
+
+    if loadedenv['derived_src'] != '' and loadedenv['derived_dst'] == '':
+        print("If adding a field, you must have a field name")
+        print("derived_src %s - derived_dst: %s" % (loadedenv['derived_src'], loadedenv['derived_dst']))
+        sys.exit(1)
+
 
     if loadedenv['dest_type'] == 'parq':
         if not sys.version_info > (3,):
@@ -415,6 +432,24 @@ def returnJSONRecord(m):
 
         if loadedenv['debug'] >= 1 and failedjson >= 1:
             printJSONFail(m, retval)
+
+
+    if loadedenv['derived_src'] != "":
+        try:
+            s = loadedenv['derived_start']
+            e = loadedenv['derived_end']
+            srcval = retval[loadedenv['derived_src']]
+            if e != 0:
+                retval[loadedenv['derived_dst']] = srcval[s:e]
+            else:
+                retval[loadedenv['derived_dst']] = srcval[s:]
+        except:
+            print("Error converting field %s" % loadedenv['derived_src'])
+            if loadedenv['derived_req'] != 0:
+                print("Exiting due to derived_req being set")
+                sys.exit(1)
+
+
     return retval, failedjson
 
 

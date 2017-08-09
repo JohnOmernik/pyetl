@@ -72,6 +72,20 @@ export PARQ_HAS_NULLS="1"
 # Do you want us to merge files, i.e. take a file that has lots of row groups read it all in and write it all out to reduce the row groups in the file?
 export PARQ_MERGE_FILE="1"
 
+##################################
+# The derived section allows us to create a field on the fly from a slice of a different field. 
+# for example, if you had a source field named ts of 2017-08-08T21:26:10.843768Z you could create a derived field of ts_day of 2017-08-08 by setting src to ts, dst to ts_day, start to 0 and end to 10
+# If you want the script to fail if this conversion fails, then set req to 1
+# Note, if you set DERIVED_SRC="" (or don't set it) nothing happens
+
+
+#export DERIVED_SRC=""      # The field to src
+#export DERIVED_DST=""      # The Field to place the derived value
+#export DERIVED_START="0"   # The position to start things on
+#export DERIVED_END="0"     # The End position, if you put 0 for this, it assumes the end of the string.. (essentially 0 is like doing a sliced of val[0:]
+#export DERIVED_REQ="0"     # if this is 1 the script will exit if things go bonkers"
+
+
 # Run Py ETL!
 if [ "$DEST_TYPE" == "maprdb" ]; then
     # Mapr DB requires Python 2
